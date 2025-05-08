@@ -1,0 +1,140 @@
+global:
+  image:
+    pullPolicy: IfNotPresent
+    pullSecretNames: []
+  labels: {}
+
+############################################################
+# NATS config
+############################################################
+config:
+  cluster:
+    enabled: true
+    port: 6222
+    # must be 2 or higher when jetstream is enabled
+    replicas: 3
+
+  jetstream:
+    enabled: true
+
+    fileStore:
+      enabled: true
+      dir: /data
+
+      pvc:
+        enabled: true
+        size: 1Gi
+        storageClassName:
+
+  nats:
+    port: 4222
+    tls:
+      enabled: false
+      # set secretName in order to mount an existing secret to dir
+      secretName:
+      dir: /etc/nats-certs/nats
+      cert: tls.crt
+      key: tls.key
+      # merge or patch the tls config
+      # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+      merge: {}
+      patch: []
+
+  # adds a prefix to the server name, which defaults to the pod name
+  # helpful for ensuring server name is unique in a super cluster
+  serverNamePrefix: ""
+
+  merge:
+    accounts:
+      SYS:
+        users:
+        - user: sys
+          password: $2a$12$OARt2FqoDUI2.aWQP6pBl...A5QgdQOFbvEmiwFjdYwjj6C6XGCby
+      GENERAL:
+        users:
+        - user: general
+        jetstream: {}
+    no_auth_user: general
+    system_account: SYS
+  patch: []
+
+container:
+  image:
+    repository: nats
+    tag: 2.11.0-alpine
+    pullPolicy:
+    registry:
+
+  # container port options
+  # must be enabled in the config section also
+  # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#containerport-v1-core
+  ports:
+    nats: {}
+    leafnodes: {}
+    websocket: {}
+    mqtt: {}
+    cluster: {}
+    gateway: {}
+    monitor: {}
+    profiling: {}
+
+  # map with key as env var name, value can be string or map
+  # example:
+  #
+  #   env:
+  #     GOMEMLIMIT: 7GiB
+  #     TOKEN:
+  #       valueFrom:
+  #         secretKeyRef:
+  #           name: nats-auth
+  #           key: token
+  env: {}
+
+  # merge or patch the container
+  # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#container-v1-core
+  merge: {}
+  patch: []
+
+
+############################################################
+# service
+############################################################
+service:
+  enabled: true
+
+  # service port options
+  # additional boolean field enable to control whether port is exposed in the service
+  # must be enabled in the config section also
+  # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#serviceport-v1-core
+  ports:
+    nats:
+      enabled: true
+    leafnodes:
+      enabled: false
+    websocket:
+      enabled: false
+    mqtt:
+      enabled: false
+    cluster:
+      enabled: false
+    gateway:
+      enabled: false
+    monitor:
+      enabled: false
+    profiling:
+      enabled: false
+
+  # merge or patch the service
+  # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#service-v1-core
+  merge:
+    spec:
+      type: LoadBalancer
+  patch: []
+  # defaults to "{{ include "nats.fullname" $ }}"
+  name:
+
+natsBox:
+  enabled: false
+
+reloader:
+  enabled: false
