@@ -31,6 +31,7 @@ type (
 func NewNatsDistributedLock(js jetstream.JetStream, name string, opts ...Opts) (NatsDistributedLock, error) {
 	result := &natsDistributedLock{
 		namespace:    name,
+		instanceID:   nuid.Next(),
 		ttl:          time.Second * 30,
 		replicas:     1,
 		refreshDelay: time.Second * 20,
@@ -54,6 +55,8 @@ func NewNatsDistributedLock(js jetstream.JetStream, name string, opts ...Opts) (
 	}
 	result.semaphore = kv
 
+	log.Info().Str("namespace", name).Str("instance", result.instanceID).Dur("ttl", result.ttl).Dur("refreshDelay", result.refreshDelay).Dur("pollDelay", result.pollDelay).Int("replicas", result.replicas).Msg("nats distributed lock initialized")
+
 	return result, nil
 }
 
@@ -66,7 +69,7 @@ func WithTTL(ttl time.Duration) Opts {
 		n.ttl = ttl
 		n.refreshDelay = n.ttl * 2 / 3
 		n.pollDelay = n.ttl / 2
-		log.Info().Dur("ttl", n.ttl).Dur("refreshDelay", n.refreshDelay).Dur("pollDelay", n.pollDelay).Msg("configured")
+		log.Info().Dur("ttl", n.ttl).Dur("refreshDelay", n.refreshDelay).Dur("pollDelay", n.pollDelay).Msg("nats distributed lock: custom TTL configured")
 		return nil
 	}
 }
@@ -74,17 +77,27 @@ func WithTTL(ttl time.Duration) Opts {
 func WithReplicas(replicas int) Opts {
 	return func(n *natsDistributedLock) error {
 		n.replicas = replicas
+		log.Info().Int("replicas", n.replicas).Msg("nats distributed lock: custom replicas configured")
+		return nil
+	}
+}
+
+func WithInstanceID(id string) Opts {
+	return func(n *natsDistributedLock) error {
+		n.instanceID = id
+		log.Info().Str("instanceID", n.instanceID).Msg("nats distributed lock: custom instance id configured")
 		return nil
 	}
 }
 
 type natsDistributedLock struct {
-	namespace    string
-	ttl          time.Duration // KV TTL
-	replicas     int           // KV replicas (for resiliency)
-	refreshDelay time.Duration // Time to wait before refreshing leadership
-	pollDelay    time.Duration // When not leader, how long to wait before polling for leadership
-	semaphore    jetstream.KeyValue
+	namespace    string             // namespace within which the distributed lock election takes place
+	instanceID   string             // unique ID to identify this instance; MUST be unique
+	ttl          time.Duration      // KV TTL
+	replicas     int                // KV replicas (for resiliency)
+	refreshDelay time.Duration      // Time to wait before refreshing leadership
+	pollDelay    time.Duration      // When not leader, how long to wait before polling for leadership
+	semaphore    jetstream.KeyValue // internal - semaphore used to perform leadership election
 }
 
 func (n *natsDistributedLock) DoWorkWhenElected(name string, job Job) io.Closer {
@@ -94,7 +107,7 @@ func (n *natsDistributedLock) DoWorkWhenElected(name string, job Job) io.Closer 
 		namespace:    n.namespace,
 		semaphore:    n.semaphore,
 		name:         name,
-		instanceID:   nuid.Next(),
+		instanceID:   n.instanceID,
 		job:          job,
 		refreshDelay: n.refreshDelay,
 		pollDelay:    n.pollDelay,
@@ -121,18 +134,19 @@ type campaign struct {
 func (c *campaign) Close() error {
 	c.stopRunning()
 	<-c.running
+	log.Info().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("exited leadership campaign")
 	return nil
 }
 
 func (c *campaign) run(ctx context.Context) {
-	log.Debug().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("running leadership campaign")
+	log.Info().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("running leadership campaign")
 	defer close(c.running)
 
 	for {
-		_, err := c.semaphore.Create(context.Background(), c.name, []byte(c.instanceID))
+		_, err := c.semaphore.Create(ctx, c.name, []byte(c.instanceID))
 		switch {
 		case err == nil:
-			log.Debug().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("elected as leader")
+			log.Info().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("elected as leader")
 			c.doWorkAndKeepAlive(ctx)
 			select {
 			case <-ctx.Done():
@@ -163,6 +177,7 @@ func (c *campaign) doWorkAndKeepAlive(ctx context.Context) {
 		func(context.Context, chan error) {
 			c.job(ctx)
 			close(workStopped)
+			log.Info().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("leadership ended")
 		},
 		func(context.Context, chan error) {
 			for {
