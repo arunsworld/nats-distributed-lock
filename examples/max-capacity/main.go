@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	ndl "github.com/arunsworld/nats-distributed-lock"
 	"github.com/nats-io/nats.go/jetstream"
@@ -52,7 +53,7 @@ func run(ctx context.Context) error {
 		maxCapacity: 1,
 	}
 
-	doneWithJobA := dlock.DoWorkWhenElected("job-A", func(ctx context.Context) {
+	jobACampaign := dlock.DoWorkWhenElected("job-A", func(ctx context.Context) {
 		if err := c.doWork(); err != nil {
 			log.Error().Err(err).Msg("error doing job-A work")
 			return
@@ -63,9 +64,9 @@ func run(ctx context.Context) error {
 		<-ctx.Done()
 		log.Info().Msg("stopping job-A work")
 	})
-	defer doneWithJobA.Close()
+	defer jobACampaign.Close()
 
-	doneWithJobB := dlock.DoWorkWhenElected("job-B", func(ctx context.Context) {
+	jobBCampaign := dlock.DoWorkWhenElected("job-B", func(ctx context.Context) {
 		if err := c.doWork(); err != nil {
 			log.Error().Err(err).Msg("error doing job-B work")
 			return
@@ -76,7 +77,9 @@ func run(ctx context.Context) error {
 		<-ctx.Done()
 		log.Info().Msg("stopping job-B work")
 	})
-	defer doneWithJobB.Close()
+	defer jobBCampaign.Close()
+
+	go pollCampaigns(ctx, jobACampaign, jobBCampaign)
 
 	<-ctx.Done()
 
@@ -108,5 +111,29 @@ func (c *capacity) releaseWork() {
 
 	if c.capacityUsed > 0 {
 		c.capacityUsed--
+	}
+}
+
+func pollCampaigns(ctx context.Context, campaigns ...ndl.Campaign) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			for _, c := range campaigns {
+				name := c.Name()
+				leader, err := c.CurrentLeader()
+				if err != nil {
+					log.Error().Err(err).Str("campaign", name).Msg("error getting current leader")
+				} else {
+					log.Info().Str("campaign", name).Str("instance", leader).Msg("current leader")
+				}
+			}
+			select {
+			case <-time.After(time.Second * 3):
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }

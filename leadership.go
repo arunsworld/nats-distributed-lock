@@ -17,14 +17,24 @@ import (
 type Job func(context.Context)
 
 type (
-	// NatsDistributedLock provides capability to encapsulate a job that should be done when elected
+	// NatsDistributedLock provides capability to encapsulate a job that should be done when elected via a leadership campaign
 	NatsDistributedLock interface {
-		// Multiple indepdendent jobs may be defined differentiated by their name
-		// Returns a Closer whos Close method must be called when quitting to cleanup resources
-		DoWorkWhenElected(name string, job Job) io.Closer
+		// Multiple indepdendent jobs may be defined differentiated by their name, each resulting in an individual campaign
+		DoWorkWhenElected(name string, job Job) Campaign
 	}
 
 	Opts func(*natsDistributedLock) error
+
+	// Campaign encapsulates a leadership
+	Campaign interface {
+		// Close method must be called when quitting to cleanup resources
+		io.Closer
+		// Name of the campaign as passed in
+		Name() string
+		// CurrentLeader returns the instance ID of the current leader; if no leader at the moment an empty string is returned
+		// errors due to infrastructure errors (connectivity, timeouts, etc.)
+		CurrentLeader() (string, error)
+	}
 )
 
 // Creates a NatsDistributedLock with a given namespace
@@ -100,7 +110,7 @@ type natsDistributedLock struct {
 	semaphore    jetstream.KeyValue // internal - semaphore used to perform leadership election
 }
 
-func (n *natsDistributedLock) DoWorkWhenElected(name string, job Job) io.Closer {
+func (n *natsDistributedLock) DoWorkWhenElected(name string, job Job) Campaign {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	dl := &campaign{
@@ -131,11 +141,28 @@ type campaign struct {
 	running     chan (struct{})
 }
 
+func (c *campaign) Name() string {
+	return c.name
+}
+
 func (c *campaign) Close() error {
 	c.stopRunning()
 	<-c.running
 	log.Info().Str("namespace", c.namespace).Str("campaign", c.name).Str("instance", c.instanceID).Msg("exited leadership campaign")
 	return nil
+}
+
+func (c *campaign) CurrentLeader() (string, error) {
+	kve, err := c.semaphore.Get(context.Background(), c.name)
+	switch {
+	case err == nil:
+		currentLeader := string(kve.Value())
+		return currentLeader, nil
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return "", nil
+	default:
+		return "", fmt.Errorf("error getting current leader: %w", err)
+	}
 }
 
 func (c *campaign) run(ctx context.Context) {
