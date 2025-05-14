@@ -19,6 +19,7 @@ type Job func(context.Context)
 type (
 	// NatsDistributedLock provides capability to encapsulate a job that should be done when elected via a leadership campaign
 	NatsDistributedLock interface {
+		InstanceID() string
 		// Multiple indepdendent jobs may be defined differentiated by their name, each resulting in an individual campaign
 		DoWorkWhenElected(name string, job Job) Campaign
 	}
@@ -110,6 +111,10 @@ type natsDistributedLock struct {
 	semaphore    jetstream.KeyValue // internal - semaphore used to perform leadership election
 }
 
+func (n *natsDistributedLock) InstanceID() string {
+	return n.instanceID
+}
+
 func (n *natsDistributedLock) DoWorkWhenElected(name string, job Job) Campaign {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -159,6 +164,8 @@ func (c *campaign) CurrentLeader() (string, error) {
 		currentLeader := string(kve.Value())
 		return currentLeader, nil
 	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return "", nil
+	case errors.Is(err, jetstream.ErrKeyDeleted):
 		return "", nil
 	default:
 		return "", fmt.Errorf("error getting current leader: %w", err)
